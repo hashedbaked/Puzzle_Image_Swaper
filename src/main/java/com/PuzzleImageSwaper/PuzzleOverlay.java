@@ -8,6 +8,13 @@ import javax.inject.Inject;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 
+/**
+ * Overlay that draws our custom puzzle tiles on top of the puzzle widget tiles.
+ *
+ * Class Description:
+ * - The plugin hides original widget sprites by setting spriteId = -1.
+ * - This overlay draws image tiles in the exact widget bounds so it "replaces" the UI art.
+ */
 public class PuzzleOverlay extends Overlay
 {
     private static final int GROUP_ID = 306;
@@ -17,15 +24,15 @@ public class PuzzleOverlay extends Overlay
     private final PuzzleImageSwaperConfig config;
 
     /**
-     * We inject the plugin so we can query:
-     * - what the original spriteId was for a widget (before we hid it)
-     * - which custom tile index corresponds to that spriteId
+     * Inject the plugin so we can query:
+     * - the original spriteId for a widget (before it was hidden)
+     * - the mapping from spriteId -> custom tile index
      */
     private final PuzzleImageSwaperPlugin plugin;
 
     /**
-     * The custom image split into 49 pieces.
-     * The plugin sets this once on startup.
+     * Custom image split into 49 pieces.
+     * Set by the plugin when the image is loaded/reloaded.
      */
     private BufferedImage[] tiles;
 
@@ -36,18 +43,22 @@ public class PuzzleOverlay extends Overlay
         this.config = config;
         this.plugin = plugin;
 
+        // DYNAMIC means it renders where we draw it (not fixed to a corner).
         setPosition(OverlayPosition.DYNAMIC);
 
         /**
-         * ABOVE_WIDGETS means:
-         * - RuneLite draws the game UI widgets first
-         * - Then it draws this overlay on top
+         * ABOVE_WIDGETS:
+         * - RuneLite draws game widgets first
+         * - then it draws overlays above them
          *
-         * We hide the original sprite of each puzzle tile, then draw our custom tile image here.
+         * Drawing ABOVE_WIDGETS makes us the visible image since it is possible to hide the original sprites.
          */
         setLayer(OverlayLayer.ABOVE_WIDGETS);
     }
 
+    /**
+     * Called by the plugin after loading/scaling/splitting an image.
+     */
     public void setTiles(BufferedImage[] tiles)
     {
         this.tiles = tiles;
@@ -56,13 +67,13 @@ public class PuzzleOverlay extends Overlay
     @Override
     public Dimension render(Graphics2D graphics)
     {
-        // If the feature is disabled or tiles aren't loaded, do nothing.
+        // If disabled or no tiles loaded, draw nothing.
         if (!config.enableCustomBackground() || tiles == null)
         {
             return null;
         }
 
-        // Find the widget that contains all puzzle tile widgets
+        // Find the puzzle piece container widget.
         Widget pieces = client.getWidget(GROUP_ID, PIECES_CHILD_ID);
         if (pieces == null || pieces.getChildren() == null)
         {
@@ -71,67 +82,53 @@ public class PuzzleOverlay extends Overlay
 
         Widget[] children = pieces.getChildren();
 
-        /**
-         * Nearest neighbor prevents blurring when scaling pixel-art-ish images.
-         * (Similar to point sampling vs linear filtering in graphics APIs.)
-         */
         graphics.setRenderingHint(
                 RenderingHints.KEY_INTERPOLATION,
                 RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR
         );
 
-        /**
-         * Loop over each tile widget.
-         * Each widget's bounds tell us WHERE on screen to draw.
-         */
+        // Draw a tile image for each puzzle piece widget.
         for (int i = 0; i < children.length; i++)
         {
             Widget tile = children[i];
 
-            // Skip null widgets or hidden widgets
+            // Skip null/hidden widgets.
             if (tile == null || tile.isHidden())
             {
                 continue;
             }
 
+            // Bounds are the on-screen rectangle where we must draw.
             Rectangle bounds = tile.getBounds();
             if (bounds == null)
             {
                 continue;
             }
 
-            /**
-             * The "empty" puzzle space is usually represented by a 0x0 widget.
-             * We don't want to draw anything there.
-             */
-            if (tile.getWidth() == 0 || tile.getHeight() == 0)
+            // Skip "empty slot" (often 0x0 bounds).
+            if (bounds.width <= 0 || bounds.height <= 0)
             {
                 continue;
             }
 
             /**
-             * We want the image to be SCRAMBLED like the default puzzle.
+             * Determine which tile slice to draw.
              *
-             * That means we do NOT pick a tile slice based on board cell position.
-             * Instead, each moving piece has an identity, and keeps the same slice wherever it moves.
-             *
-             * We use "originalSpriteId" as that identity.
+             * Scramble the same way as the default puzzle:
+             * - Each physical piece has an identity (originalSpriteId)
+             * - That identity stays with the piece as it moves around
              */
             Integer tileIndex = null;
 
             Integer originalSpriteId = plugin.getOriginalSpriteId(tile);
-
             if (originalSpriteId != null && originalSpriteId > 0)
             {
                 tileIndex = plugin.getTileIndexForSpriteId(originalSpriteId);
             }
 
             /**
-             * IMPORTANT FALLBACK:
-             * If mapping isn't available (for example, spriteId wasn't unique or wasn't captured),
-             * draw by array index so the user still sees something.
-             *
-             * This is mainly a safety net + debugging aid.
+             * Fallback:
+             * If we can't map identity, draw by child index so user sees something.
              */
             if (tileIndex == null)
             {
@@ -143,7 +140,7 @@ public class PuzzleOverlay extends Overlay
                 continue;
             }
 
-            // Finally draw the correct custom image slice at this widget's screen rectangle.
+            // Draw the tile image into this widget's bounds.
             graphics.drawImage(
                     tiles[tileIndex],
                     bounds.x,
