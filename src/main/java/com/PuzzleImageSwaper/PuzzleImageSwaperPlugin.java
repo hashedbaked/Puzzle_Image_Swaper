@@ -122,7 +122,7 @@ public class PuzzleImageSwaperPlugin extends Plugin
 		 * - This panel is NOT inside the config screen.
 		 * - It appears as a new sidebar icon. Click it to open.
 		 */
-		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/net/runelite/client/plugins/camera/icon.png");
+		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/PuzzleImageSwaperIcon.png");
 
 		navButton = NavigationButton.builder()
 				.tooltip("PuzzleImageSwaper")
