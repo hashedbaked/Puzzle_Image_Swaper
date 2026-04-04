@@ -17,111 +17,189 @@ import net.runelite.client.util.ImageUtil;
 
 import javax.imageio.ImageIO;
 import javax.inject.Inject;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
+import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
-import java.util.List;
 import java.util.Map;
 
+/**
+ * PuzzleImageSwaperPlugin
+ *
+ * Description:
+ * - Replace the Clue Scroll sliding puzzle tile art with a custom user-selected image (static or animated GIF).
+ *
+ * Key implementation details:
+ * - The puzzle UI (Widget group 306) has two relevant layers:
+ *   1) Interactive "logic" layer (children 0..24, type=4): provides stable bounds and click targets.
+ *   2) Visual "model" layer (children 25..48, type=6): renders the actual in-game puzzle pieces.
+ *
+ * Why we use modelId:
+ * - Varc "piece ids" (varcs 82..106). These can contain duplicates and cannot uniquely identify puzzle pieces.
+ * - The model layer uses unique model IDs (observed 4156..4179) for the 24 puzzle pieces (blank is missing).
+ * - Using model IDs gives a deterministic, image-independent mapping and avoids fragile pixel matching.
+ *
+ * Blank tile rule:
+ * - Our custom image is split into a 5x5 grid (25 tiles).
+ * - We reserve tileIndex 24 (bottom-right) as the blank and NEVER draw it.
+ *
+ * IMPORTANT NOTE ABOUT HARDCODED MODEL_ID_MIN/MAX:
+ * - MODEL_ID_MIN=4156 and MODEL_ID_MAX=4179 are observed for the sliding puzzle models
+ *   at the time of writing.
+ * - If Jagex changes these model IDs (or the widget structure), the mapping will break and the overlay
+ *   will stop drawing correctly.
+ */
 @Slf4j
 @PluginDescriptor(
 		name = "PuzzleImageSwaper"
 )
 public class PuzzleImageSwaperPlugin extends Plugin
 {
-	/**
-	 * Clue scroll slide puzzle group id.
-	 * The group/child IDs identify RuneLite widgets in the game UI.
-	 * This affects all clue puzzles.
-	 */
+	// Puzzle widget group + child containing puzzle pieces container.
 	private static final int PUZZLE_GROUP_ID = 306;
-
-	/**
-	 * Widget child that holds the individual tile widgets (the pieces).
-	 */
 	private static final int PIECES_CHILD_ID = 4;
 
+	// Puzzle is always 5x5.
+	private static final int PUZZLE_SIZE = 5;
+	private static final int TILE_COUNT = PUZZLE_SIZE * PUZZLE_SIZE; // 25
+
 	/**
-	 * "Working size" for the custom image:
-	 * - Scale the user image to 256x256
-	 * - Then split into 7x7 tiles
-	 *
-	 * The overlay will then scale each tile to the widget bounds on-screen.
+	 * RuneLite widget layout:
+	 * - The puzzle uses 50px grid steps in widget original coordinates.
+	 * - Actual tile bounds are typically 49x49, but OriginalX/OriginalY still align to 0,50,100,150,200.
+	 */
+	private static final int WIDGET_GRID_STEP = 50;
+
+	/**
+	 * Target size for the custom image before splitting.
+	 * We scale to a square so each of the 25 tiles has a consistent pixel size.
 	 */
 	private static final int TARGET_IMAGE_SIZE = 256;
+
+	/** Safety bound to avoid decoding extremely large GIFs. */
+	private static final int GIF_MAX_FRAMES = 200;
+
+	/**
+	 * Hardcoded model ID range for clue scroll sliding puzzle pieces.
+	 *
+	 * Observed:
+	 * - 24 distinct model ids: 4156..4179.
+	 * - The blank piece is represented by a missing model widget in the 5x5 grid (cell is "BLANK").
+	 *
+	 * Example observations of initial puzzle:
+	 * [INFO] modelId grid (row-major):
+	 * [INFO]  4157  4161  4158  4159  4160
+	 * [INFO]  4163  4168  4164  4169 BLANK
+	 * [INFO]  4171  4156  4166  4170  4165
+	 * [INFO]  4162  4177  4173  4172  4175
+	 * [INFO]  4167  4176  4178  4174  4179
+	 * [INFO] Counts: inRange[4156..4179]=24, blankCells=1
+	 *
+	 * TODO: If these change in the future, update these constants or implement dynamic detection.
+	 */
+	private static final int MODEL_ID_MIN = 4156;
+	private static final int MODEL_ID_MAX = 4179;
+
+	/**
+	 * We reserve the last image tile (bottom-right, tileIndex 24) to represent the blank.
+	 * This ensures that when the puzzle is solved the visible 24 tiles form the correct image
+	 * and the blank appears in the canonical bottom-right location.
+	 */
+	private static final int BLANK_TILE_INDEX = 24;
+	private static final int TILE_COUNT_NO_BLANK = 24; // 0..23 are drawable
 
 	@Inject private Client client;
 	@Inject private PuzzleImageSwaperConfig config;
 	@Inject private OverlayManager overlayManager;
 	@Inject private PuzzleOverlay puzzleOverlay;
 
-	/**
-	 * Used for:
-	 * - reading config values
-	 * - writing imagePath when user selects a file in the panel
-	 */
 	@Inject private ConfigManager configManager;
-
-	/**
-	 * Used to add a navigation button + plugin panel to the RuneLite left sidebar.
-	 */
 	@Inject private ClientToolbar clientToolbar;
 
-	/**
-	 * Sidebar navigation button and our custom panel.
-	 * These are separate from the standard config panel.
-	 */
 	private NavigationButton navButton;
 	private PuzzleImageSwaperPanel panel;
 
 	/**
-	 * Custom image split into 49 pieces.
-	 * If null: no custom image is loaded, and the overlay draws nothing.
+	 * The current set of 25 image tiles used by the overlay.
+	 * For GIFs, this will point at the current frame's split tiles.
 	 */
 	private BufferedImage[] splitTiles;
 
-	/**
-	 * Map each tile widget instance -> sprite id that it originally had before replaced/hid it.
-	 *
-	 * IdentityHashMap is used because Widget does not necessarily implement stable equals/hashCode for identity usage.
-	 */
-	private final IdentityHashMap<Widget, Integer> originalSpriteIdByWidget = new IdentityHashMap<>();
+	/** GIF state (null when using static images). */
+	private GifAnimationUtil.Animation gifAnimation;
+	private long gifStartTimeMs = 0L;
+	private int lastGifFrameIndex = -1;
 
 	/**
-	 * Map sprite id -> tile index (0..48).
-	 *
-	 * The core trick:
-	 * - The puzzle pieces move around, but each piece keeps its original sprite id identity.
-	 * - Use that sprite id to decide which custom image slice to draw for that piece.
+	 * cellBounds maps cellIndex (row-major 0..24) -> screen bounds for the interactive grid.
+	 * The overlay uses this to know where to draw each custom tile.
 	 */
-	private final Map<Integer, Integer> spriteIdToTileIndex = new HashMap<>();
+	private final Map<Integer, Rectangle> cellBounds = new HashMap<>();
 
-	private boolean mappingBuilt = false;
-	private boolean debugLoggedThisOpen = false;
+	/**
+	 * modelIdAtCell[cellIndex] is read from the model layer (type=6 widgets).
+	 * - For the 24 non-blank pieces, it will be in [MODEL_ID_MIN..MODEL_ID_MAX].
+	 * - For the blank cell, it remains -1.
+	 */
+	private final int[] modelIdAtCell = new int[TILE_COUNT];
+
+	/**
+	 * Exposes stable bounds to the overlay.
+	 * (Overlay should never mutate this map; so it returns an unmodifiable view.)
+	 */
+	public Map<Integer, Rectangle> getCellBounds()
+	{
+		return Collections.unmodifiableMap(cellBounds);
+	}
+
+	/**
+	 * Exposes the per-cell model IDs to the overlay.
+	 */
+	public int getModelIdAtCell(int cellIndex)
+	{
+		if (cellIndex < 0 || cellIndex >= TILE_COUNT)
+		{
+			return -1;
+		}
+		return modelIdAtCell[cellIndex];
+	}
+
+	/**
+	 * Deterministic mapping:
+	 * - modelId 4156..4179 -> tileIndex 0..23
+	 * - tileIndex 24 is reserved as blank and never assigned
+	 */
+	public int mapModelIdToTileIndex(int modelId)
+	{
+		if (modelId < MODEL_ID_MIN || modelId > MODEL_ID_MAX)
+		{
+			return -1;
+		}
+
+		// 4156->0 ... 4179->23
+		int idx = modelId - MODEL_ID_MIN;
+		if (idx < 0 || idx >= TILE_COUNT_NO_BLANK)
+		{
+			return -1;
+		}
+
+		// Note: Intentionally not mapping anything to BLANK_TILE_INDEX (24)
+		return idx;
+	}
 
 	@Override
 	protected void startUp()
 	{
 		log.debug("PuzzleImageSwaper started!");
 
-		// Register overlay to draw custom tile images above the UI widgets.
+		// Register overlay so it can draw custom tiles above the puzzle widgets.
 		overlayManager.add(puzzleOverlay);
 
-		// Create our sidebar panel (contains "Choose image..." button).
+		// Create custom panel + nav button for choosing an image file.
 		panel = new PuzzleImageSwaperPanel(configManager);
 
-		/**
-		 * Create a navigation button in RuneLite's left sidebar.
-		 *
-		 * Note:
-		 * - This panel is NOT inside the config screen.
-		 * - It appears as a new sidebar icon. Click it to open.
-		 */
 		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/PuzzleImageSwaperIcon.png");
 
 		navButton = NavigationButton.builder()
@@ -133,7 +211,10 @@ public class PuzzleImageSwaperPlugin extends Plugin
 
 		clientToolbar.addNavigation(navButton);
 
-		// Attempt to load any previously saved imagePath.
+		// Initialize model grid to blank state.
+		Arrays.fill(modelIdAtCell, -1);
+
+		// Load tiles from the currently configured path (if any).
 		reloadUserImage();
 	}
 
@@ -142,7 +223,7 @@ public class PuzzleImageSwaperPlugin extends Plugin
 	{
 		log.debug("PuzzleImageSwaper stopped!");
 
-		// Remove navigation button/panel from the sidebar.
+		// Remove nav button
 		if (navButton != null)
 		{
 			clientToolbar.removeNavigation(navButton);
@@ -150,20 +231,21 @@ public class PuzzleImageSwaperPlugin extends Plugin
 		}
 		panel = null;
 
-		// Remove overlay from overlay manager.
+		// Remove overlay
 		overlayManager.remove(puzzleOverlay);
 
-		// Clear puzzle tracking to avoid stale widget references.
-		resetPuzzleTracking();
-
-		// Clear tiles from memory (and from overlay).
+		// Clear tiles / animation state
 		splitTiles = null;
+		gifAnimation = null;
 		puzzleOverlay.setTiles(null);
+
+		// Clear puzzle state caches
+		cellBounds.clear();
+		Arrays.fill(modelIdAtCell, -1);
 	}
 
 	/**
-	 * Fires whenever a config value in this group changes.
-	 * Use it to reload the image when imagePath changes.
+	 * Reload image whenever plugin config changes (new file path, enable toggle, etc.)
 	 */
 	@Subscribe
 	public void onConfigChanged(ConfigChanged e)
@@ -175,7 +257,7 @@ public class PuzzleImageSwaperPlugin extends Plugin
 
 		reloadUserImage();
 
-		// Keep panel UI label in sync (optional convenience)
+		// Keep panel label in sync with config
 		if (panel != null)
 		{
 			panel.refreshCurrentPath();
@@ -183,45 +265,76 @@ public class PuzzleImageSwaperPlugin extends Plugin
 	}
 
 	/**
-	 * Loads the user image from config.imagePath(), scales it to 256x256, splits into 7x7 tiles,
-	 * then pushes those tiles into the overlay.
+	 * Load user's selected image path, scale it, split into a 5x5 tile array,
+	 * and hand tiles to the overlay.
+	 *
+	 * Supports:
+	 * - static images (png/jpg/jpeg)
+	 * - animated gifs
 	 */
 	private void reloadUserImage()
 	{
 		String path = config.imagePath();
 		if (path == null || path.trim().isEmpty())
 		{
-			// No image set -> disable custom drawing (overlay will early-return).
-			log.debug("No imagePath set; custom puzzle tiles disabled until an image is selected.");
+			log.debug("No imagePath set.");
 			splitTiles = null;
+			gifAnimation = null;
 			puzzleOverlay.setTiles(null);
 			return;
 		}
 
+		String normalizedPath = path.trim();
+		String lower = normalizedPath.toLowerCase();
+
 		try
 		{
-			// Load from local file system.
-			File f = new File(path.trim());
-			BufferedImage loaded = ImageIO.read(f);
+			File f = new File(normalizedPath);
 
-			if (loaded == null)
+			// Reset GIF state; will be repopulated if .gif
+			gifAnimation = null;
+			gifStartTimeMs = System.currentTimeMillis();
+			lastGifFrameIndex = -1;
+
+			if (lower.endsWith(".gif"))
 			{
-				log.warn("ImageIO.read returned null for file: {}", f.getAbsolutePath());
-				return;
+				// Decode GIF frames, scale each, split each into 25 tiles
+				GifAnimationUtil.Animation anim = GifAnimationUtil.decodeGifToTiles(
+						f,
+						TARGET_IMAGE_SIZE,
+						PUZZLE_SIZE,
+						PUZZLE_SIZE,
+						GIF_MAX_FRAMES
+				);
+
+				if (anim == null || anim.getFrameCount() == 0)
+				{
+					log.warn("GIF decoded but no frames");
+					splitTiles = null;
+					puzzleOverlay.setTiles(null);
+					return;
+				}
+
+				gifAnimation = anim;
+
+				// Start with frame 0
+				splitTiles = anim.framesTiles[0];
+				puzzleOverlay.setTiles(splitTiles);
 			}
+			else
+			{
+				// Static image
+				BufferedImage loaded = ImageIO.read(f);
+				if (loaded == null)
+				{
+					log.warn("ImageIO.read returned null for {}", f.getAbsolutePath());
+					return;
+				}
 
-			// Scale to a fixed working size so slicing is consistent.
-			BufferedImage scaled = scaleTo(loaded, TARGET_IMAGE_SIZE, TARGET_IMAGE_SIZE);
-
-			// Slice into 7x7.
-			splitTiles = splitImage(scaled, 7, 7);
-
-			// Hand to overlay; overlay will draw these onto the puzzle tile widgets.
-			puzzleOverlay.setTiles(splitTiles);
-
-			log.debug("Loaded image: original={}x{}, scaled={}x{}",
-					loaded.getWidth(), loaded.getHeight(),
-					scaled.getWidth(), scaled.getHeight());
+				BufferedImage scaled = GifAnimationUtil.scaleTo(loaded, TARGET_IMAGE_SIZE, TARGET_IMAGE_SIZE);
+				splitTiles = GifAnimationUtil.splitImage(scaled, PUZZLE_SIZE, PUZZLE_SIZE);
+				puzzleOverlay.setTiles(splitTiles);
+			}
 		}
 		catch (Exception ex)
 		{
@@ -230,193 +343,169 @@ public class PuzzleImageSwaperPlugin extends Plugin
 	}
 
 	/**
-	 * Utility: scale an image to WxH.
-	 * Use bilinear filtering for smoother results on photos.
-	 */
-	private static BufferedImage scaleTo(BufferedImage src, int w, int h)
-	{
-		BufferedImage dst = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-		Graphics2D g = dst.createGraphics();
-		try
-		{
-			g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-			g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-			g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-			g.drawImage(src, 0, 0, w, h, null);
-		}
-		finally
-		{
-			g.dispose();
-		}
-		return dst;
-	}
-
-	/**
-	 * Called every client tick (~50 times/sec).
-	 *
-	 * While the puzzle is open:
-	 *  1) capture original sprite ids
-	 *  2) hide original sprites (set sprite id to -1)
-	 *
-	 * The overlay then draws custom tiles over the tile widgets.
+	 * Main per-tick update:
+	 * - advance GIF frame if needed
+	 * - read puzzle widget structure
+	 * - compute cell bounds (type=4 layer)
+	 * - compute per-cell model IDs (type=6 layer)
+	 * - hide default puzzle art when enabled so only our overlay is visible
 	 */
 	@Subscribe
 	public void onClientTick(ClientTick tick)
 	{
-		// If disabled, do nothing (overlay also does nothing).
-		if (!config.enableCustomBackground())
+		// Update GIF frame
+		if (gifAnimation != null)
 		{
-			return;
+			advanceGifFrameIfNeeded();
 		}
 
-		// If no image loaded, do nothing.
-		if (splitTiles == null)
-		{
-			return;
-		}
-
-		// Get the widget that contains all puzzle pieces.
 		Widget pieces = client.getWidget(PUZZLE_GROUP_ID, PIECES_CHILD_ID);
 		if (pieces == null || pieces.getChildren() == null)
 		{
-			// Puzzle UI closed, clear tracking so we rebuild next time it opens.
-			resetPuzzleTracking();
+			// Puzzle UI not present
+			cellBounds.clear();
+			Arrays.fill(modelIdAtCell, -1);
 			return;
 		}
 
 		Widget[] children = pieces.getChildren();
 
-		// Debug logging once per puzzle open (optional).
-		if (!debugLoggedThisOpen)
+		// (1) Bounds from interactive layer (type=4, indices 0..24)
+		cellBounds.clear();
+		buildCellBoundsFromType4(children);
+
+		// (2) Model IDs from visual layer (type=6, indices 25..48)
+		buildModelGridFromType6(children);
+
+		// (3) Hide default visuals (only when overlay is enabled and tiles are loaded)
+		if (config.enableCustomBackground() && splitTiles != null)
 		{
-			debugLoggedThisOpen = true;
-			for (int i = 0; i < Math.min(children.length, 10); i++)
+			hideType6(children, true);       // hide default in-game models
+			hideSpritesOnType4(children);    // clear any sprites on interactive layer
+		}
+		else
+		{
+			// If disabled, restore default visuals
+			hideType6(children, false);
+		}
+	}
+
+	/**
+	 * Reads bounds for each cell by using the interactive widgets' OriginalX/OriginalY.
+	 */
+	private void buildCellBoundsFromType4(Widget[] children)
+	{
+		int max = Math.min(children.length, 25);
+		for (int i = 0; i < max; i++)
+		{
+			Widget w = children[i];
+			if (w == null)
 			{
-				Widget t = children[i];
-				if (t == null) continue;
-				log.debug("tile[{}]: spriteId={} itemId={} text='{}' w={} h={}",
-						i, t.getSpriteId(), t.getItemId(), t.getText(), t.getWidth(), t.getHeight());
+				continue;
+			}
+
+			Rectangle b = w.getBounds();
+			if (b == null || b.width <= 0 || b.height <= 0)
+			{
+				continue;
+			}
+
+			int col = w.getOriginalX() / WIDGET_GRID_STEP;
+			int row = w.getOriginalY() / WIDGET_GRID_STEP;
+			if (col < 0 || col >= PUZZLE_SIZE || row < 0 || row >= PUZZLE_SIZE)
+			{
+				continue;
+			}
+
+			int cellIndex = row * PUZZLE_SIZE + col;
+			cellBounds.put(cellIndex, b);
+		}
+	}
+
+	/**
+	 * Builds modelIdAtCell[] using the model widgets.
+	 * The blank is represented by the missing model cell (modelIdAtCell stays -1).
+	 */
+	private void buildModelGridFromType6(Widget[] children)
+	{
+		Arrays.fill(modelIdAtCell, -1);
+
+		for (int i = 25; i < Math.min(children.length, 49); i++)
+		{
+			Widget w = children[i];
+			if (w == null)
+			{
+				continue;
+			}
+
+			int col = w.getOriginalX() / WIDGET_GRID_STEP;
+			int row = w.getOriginalY() / WIDGET_GRID_STEP;
+			if (col < 0 || col >= PUZZLE_SIZE || row < 0 || row >= PUZZLE_SIZE)
+			{
+				continue;
+			}
+
+			int cellIndex = row * PUZZLE_SIZE + col;
+			modelIdAtCell[cellIndex] = w.getModelId();
+		}
+	}
+
+	/**
+	 * Hide/unhide the default model widgets.
+	 * When hidden, only our overlay remains visible.
+	 */
+	private void hideType6(Widget[] children, boolean hidden)
+	{
+		for (int i = 25; i < Math.min(49, children.length); i++)
+		{
+			Widget w = children[i];
+			if (w != null)
+			{
+				w.setHidden(hidden);
 			}
 		}
-
-		// Capture the original sprite id for each widget once per widget instance.
-		for (Widget tile : children)
-		{
-			if (tile == null) continue;
-			originalSpriteIdByWidget.putIfAbsent(tile, tile.getSpriteId());
-		}
-
-		// Build mapping from sprite ids to our custom tile indices, once per puzzle open.
-		if (!mappingBuilt)
-		{
-			buildSpriteMapping(children);
-			mappingBuilt = true;
-		}
-
-		// Hide the original sprites so the user only sees our overlay image.
-		for (Widget tile : children)
-		{
-			if (tile == null) continue;
-			tile.setSpriteId(-1);
-		}
 	}
 
 	/**
-	 * Build a stable spriteId -> tileIndex mapping.
-	 *
-	 * The simplest method used here:
-	 * - collect unique sprite ids observed
-	 * - sort them
-	 * - assign in sorted order to tiles[0..48]
-	 *
-	 * Default puzzle pieces appear to have distinct sprite ids.
+	 * Clear sprites on the interactive widgets.
+	 * (These widgets are primarily click targets; sprite clearing prevents any stray art from showing.)
 	 */
-	private void buildSpriteMapping(Widget[] children)
+	private void hideSpritesOnType4(Widget[] children)
 	{
-		spriteIdToTileIndex.clear();
-		List<Integer> spriteIds = new ArrayList<>();
-
-		for (Widget tile : children)
+		int max = Math.min(children.length, 25);
+		for (int i = 0; i < max; i++)
 		{
-			if (tile == null) continue;
-
-			Integer sidObj = originalSpriteIdByWidget.get(tile);
-			if (sidObj == null) continue;
-
-			int sid = sidObj;
-			if (sid > 0 && !spriteIds.contains(sid))
+			Widget w = children[i];
+			if (w != null)
 			{
-				spriteIds.add(sid);
+				w.setSpriteId(-1);
 			}
 		}
+	}
 
-		Collections.sort(spriteIds);
-
-		for (int i = 0; i < spriteIds.size() && splitTiles != null && i < splitTiles.length; i++)
+	/**
+	 * Advances animated GIF to the correct frame based on per-frame durations.
+	 * Updates overlay tiles when the frame changes.
+	 */
+	private void advanceGifFrameIfNeeded()
+	{
+		GifAnimationUtil.Animation anim = gifAnimation;
+		if (anim == null || anim.totalDurationMs <= 0)
 		{
-			spriteIdToTileIndex.put(spriteIds.get(i), i);
+			return;
 		}
 
-		log.debug("Unique original spriteIds found: {}, mapped: {}", spriteIds.size(), spriteIdToTileIndex.size());
-	}
+		long now = System.currentTimeMillis();
+		int frameIndex = GifAnimationUtil.computeFrameIndex(anim.frameDurationsMs, anim.totalDurationMs, gifStartTimeMs, now);
 
-	/**
-	 * Clear mapping and captured widget state when the puzzle closes.
-	 */
-	private void resetPuzzleTracking()
-	{
-		mappingBuilt = false;
-		debugLoggedThisOpen = false;
-		originalSpriteIdByWidget.clear();
-		spriteIdToTileIndex.clear();
-	}
-
-	/**
-	 * Used by the overlay to retrieve the sprite id that this widget had before hiding.
-	 */
-	public Integer getOriginalSpriteId(Widget tileWidget)
-	{
-		return originalSpriteIdByWidget.get(tileWidget);
-	}
-
-	/**
-	 * Used by the overlay to map an original sprite id to a custom tile index.
-	 */
-	public Integer getTileIndexForSpriteId(int originalSpriteId)
-	{
-		return spriteIdToTileIndex.get(originalSpriteId);
-	}
-
-	/**
-	 * Split an image into rows x cols equally-sized sub-images.
-	 * For the clue puzzle: 7x7 = 49.
-	 */
-	private BufferedImage[] splitImage(BufferedImage image, int rows, int cols)
-	{
-		int tileWidth = image.getWidth() / cols;
-		int tileHeight = image.getHeight() / rows;
-
-		BufferedImage[] tiles = new BufferedImage[rows * cols];
-
-		int index = 0;
-		for (int y = 0; y < rows; y++)
+		if (frameIndex != lastGifFrameIndex)
 		{
-			for (int x = 0; x < cols; x++)
-			{
-				tiles[index++] = image.getSubimage(
-						x * tileWidth,
-						y * tileHeight,
-						tileWidth,
-						tileHeight
-				);
-			}
+			lastGifFrameIndex = frameIndex;
+			splitTiles = anim.framesTiles[frameIndex];
+			puzzleOverlay.setTiles(splitTiles);
 		}
-		return tiles;
 	}
 
-	/**
-	 * Standard RuneLite config provider method.
-	 */
 	@Provides
 	PuzzleImageSwaperConfig provideConfig(ConfigManager configManager)
 	{
