@@ -200,7 +200,7 @@ public class PuzzleImageSwaperPlugin extends Plugin
 		// Create custom panel + nav button for choosing an image file.
 		panel = new PuzzleImageSwaperPanel(configManager);
 
-		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/PuzzleImageSwaperIcon.png");
+		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/Icon_00.png");
 
 		navButton = NavigationButton.builder()
 				.tooltip("PuzzleImageSwaper")
