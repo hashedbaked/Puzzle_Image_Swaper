@@ -27,6 +27,21 @@ import java.util.Map;
 
 /**
  * PuzzleImageSwaperPlugin
+ *Description:
+ * - Replace the Clue Scroll sliding puzzle tile art with a custom user-selected image (static or animated GIF).
+ * Key implementation details:
+ * - The puzzle UI (Widget group 306) has two relevant layers:
+ *   1) Interactive "logic" layer (children 0..24, type=4): provides stable bounds and click targets.
+ *   2) Visual "model" layer (children 25..48, type=6): renders the actual in-game puzzle pieces.
+ *
+ * Why use modelId:
+ * - Varc "piece ids" (varcs 82..106). These can contain duplicates and cannot uniquely identify puzzle pieces.
+ * - The model layer uses unique model IDs (observed 4156..4179) for the 24 puzzle pieces (blank is missing).
+ * - Using model IDs gives a deterministic, image-independent mapping and avoids fragile pixel matching.
+ *
+ * Blank tile rule:
+ * - The custom image is split into a 5x5 grid (25 tiles).
+ * - Reserve tileIndex 24 (bottom-right) as the blank and NEVER draw it.
  *
  * Replaces clue puzzle visuals with a user image (static/gif), while preserving puzzle interaction.
  * Now supports per-puzzle model-id mappings via PuzzleProfileRegistry.
@@ -99,6 +114,21 @@ public class PuzzleImageSwaperPlugin extends Plugin
 	private long lastUnknownProfileLogMs = 0L;
 
 	/**
+	 * Track profile used for image loading so we can hot-swap image sets when puzzle type changes.
+	 */
+	private String lastLoadedProfileName = null;
+
+	/**
+	 * Track resolved path to avoid redundant image reload work each tick.
+	 */
+	private String lastResolvedImagePath = null;
+
+	/**
+	 * Track last mode used to reload image when global/per-profile mode is toggled.
+	 */
+	private boolean lastUseGlobalImage = true;
+
+	/**
 	 * cellBounds maps cellIndex (row-major 0..24) -> screen bounds for the interactive grid.
 	 */
 	private final Map<Integer, Rectangle> cellBounds = new HashMap<>();
@@ -164,6 +194,9 @@ public class PuzzleImageSwaperPlugin extends Plugin
 		Arrays.fill(modelIdAtCell, -1);
 		activeProfile = null;
 		lastUnknownProfileLogMs = 0L;
+		lastLoadedProfileName = null;
+		lastResolvedImagePath = null;
+		lastUseGlobalImage = config.useGlobalImage();
 
 		reloadUserImage();
 	}
@@ -187,6 +220,9 @@ public class PuzzleImageSwaperPlugin extends Plugin
 		activeProfile = null;
 		puzzleOverlay.setTiles(null);
 
+		lastLoadedProfileName = null;
+		lastResolvedImagePath = null;
+
 		cellBounds.clear();
 		Arrays.fill(modelIdAtCell, -1);
 	}
@@ -207,15 +243,52 @@ public class PuzzleImageSwaperPlugin extends Plugin
 		}
 	}
 
+	/**
+	 * Resolve current image path based on config mode:
+	 * - global mode => imagePath
+	 * - per-profile mode => profile-specific key (fallback to global imagePath)
+	 */
+	private String resolveActiveImagePath()
+	{
+		if (config.useGlobalImage())
+		{
+			return config.imagePath();
+		}
+
+		String profileName = activeProfile == null ? null : activeProfile.getName();
+		if ("TREE".equalsIgnoreCase(profileName))
+		{
+			String p = config.treeImagePath();
+			if (p != null && !p.trim().isEmpty())
+			{
+				return p;
+			}
+		}
+		else if ("TROLL".equalsIgnoreCase(profileName))
+		{
+			String p = config.trollImagePath();
+			if (p != null && !p.trim().isEmpty())
+			{
+				return p;
+			}
+		}
+
+		// Fallback to global image path if per-profile is missing or unknown.
+		return config.imagePath();
+	}
+
 	private void reloadUserImage()
 	{
-		String path = config.imagePath();
+		String path = resolveActiveImagePath();
 		if (path == null || path.trim().isEmpty())
 		{
 			log.debug("No imagePath set.");
 			splitTiles = null;
 			gifAnimation = null;
 			puzzleOverlay.setTiles(null);
+			lastResolvedImagePath = null;
+			lastLoadedProfileName = activeProfile == null ? null : activeProfile.getName();
+			lastUseGlobalImage = config.useGlobalImage();
 			return;
 		}
 
@@ -231,6 +304,9 @@ public class PuzzleImageSwaperPlugin extends Plugin
 				splitTiles = null;
 				gifAnimation = null;
 				puzzleOverlay.setTiles(null);
+				lastResolvedImagePath = normalizedPath;
+				lastLoadedProfileName = activeProfile == null ? null : activeProfile.getName();
+				lastUseGlobalImage = config.useGlobalImage();
 				return;
 			}
 
@@ -249,6 +325,9 @@ public class PuzzleImageSwaperPlugin extends Plugin
 					log.warn("GIF decoded but no frames: {}", f.getAbsolutePath());
 					splitTiles = null;
 					puzzleOverlay.setTiles(null);
+					lastResolvedImagePath = normalizedPath;
+					lastLoadedProfileName = activeProfile == null ? null : activeProfile.getName();
+					lastUseGlobalImage = config.useGlobalImage();
 					return;
 				}
 
@@ -264,6 +343,9 @@ public class PuzzleImageSwaperPlugin extends Plugin
 					log.warn("ImageIO.read returned null for {}", f.getAbsolutePath());
 					splitTiles = null;
 					puzzleOverlay.setTiles(null);
+					lastResolvedImagePath = normalizedPath;
+					lastLoadedProfileName = activeProfile == null ? null : activeProfile.getName();
+					lastUseGlobalImage = config.useGlobalImage();
 					return;
 				}
 
@@ -271,6 +353,10 @@ public class PuzzleImageSwaperPlugin extends Plugin
 				splitTiles = GifAnimationUtil.splitImage(scaled, PUZZLE_SIZE, PUZZLE_SIZE);
 				puzzleOverlay.setTiles(splitTiles);
 			}
+
+			lastResolvedImagePath = normalizedPath;
+			lastLoadedProfileName = activeProfile == null ? null : activeProfile.getName();
+			lastUseGlobalImage = config.useGlobalImage();
 		}
 		catch (Exception ex)
 		{
@@ -278,6 +364,9 @@ public class PuzzleImageSwaperPlugin extends Plugin
 			splitTiles = null;
 			gifAnimation = null;
 			puzzleOverlay.setTiles(null);
+			lastResolvedImagePath = null;
+			lastLoadedProfileName = activeProfile == null ? null : activeProfile.getName();
+			lastUseGlobalImage = config.useGlobalImage();
 		}
 	}
 
@@ -327,8 +416,29 @@ public class PuzzleImageSwaperPlugin extends Plugin
 			}
 		}
 
+		// If plugin globally disabled from panel/config, always show default visuals.
+		if (!config.pluginEnabled())
+		{
+			hideType6(children, false);
+			return;
+		}
+
+		// Reload image on profile switch / mode switch / path change.
+		String currentProfileName = activeProfile == null ? null : activeProfile.getName();
+		String resolvedPath = resolveActiveImagePath();
+		boolean useGlobalNow = config.useGlobalImage();
+
+		boolean profileChanged = !equalsNullable(lastLoadedProfileName, currentProfileName);
+		boolean modeChanged = lastUseGlobalImage != useGlobalNow;
+		boolean pathChanged = !equalsNullable(lastResolvedImagePath, normalizeNullable(resolvedPath));
+
+		if (profileChanged || modeChanged || pathChanged)
+		{
+			reloadUserImage();
+		}
+
 		// (4) Hide default visuals only when fully ready
-		if (config.enableCustomBackground() && splitTiles != null && activeProfile != null)
+		if (config.pluginEnabled() && splitTiles != null && activeProfile != null)
 		{
 			hideType6(children, true);
 			hideSpritesOnType4(children);
@@ -439,6 +549,17 @@ public class PuzzleImageSwaperPlugin extends Plugin
 			splitTiles = anim.framesTiles[frameIndex];
 			puzzleOverlay.setTiles(splitTiles);
 		}
+	}
+
+	private static boolean equalsNullable(String a, String b)
+	{
+		if (a == null) return b == null;
+		return a.equals(b);
+	}
+
+	private static String normalizeNullable(String value)
+	{
+		return value == null ? null : value.trim();
 	}
 
 	@Provides

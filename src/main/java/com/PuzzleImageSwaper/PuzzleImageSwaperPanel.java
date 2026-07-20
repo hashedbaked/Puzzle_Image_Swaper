@@ -3,152 +3,280 @@ package com.PuzzleImageSwaper;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.ui.PluginPanel;
 
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JSeparator;
+import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
-import java.awt.GridLayout;
+import java.awt.Dimension;
 import java.io.File;
 
 /**
- * Custom plugin side panel (left sidebar button) for PuzzleImageSwaper.
- *
- * Why this exists:
- * - RuneLite's standard config panel can only show basic config items (checkboxes, text fields, dropdowns).
- * - It cannot add custom "Upload image" buttons.
- * - Create a PluginPanel with a Swing button that opens the OS file explorer (JFileChooser).
- *
- * Behavior:
- * - Clicking "Choose image..." opens a file explorer dialog.
- * - When the user selects a file, store the absolute path in RuneLite config:
- *     group: PuzzleImageSwaper
- *     key:   imagePath
- * - The plugin listens for ConfigChanged events and reloads the image automatically.
+ * Custom plugin side panel for PuzzleImageSwaper.
  */
 public class PuzzleImageSwaperPanel extends PluginPanel
 {
-    /**
-     * ConfigManager allows us to read/write RuneLite config values.
-     * Use it here to persist the selected file path (imagePath).
-     */
+    private static final int PANEL_PAD = 6;
+    private static final int GAP_XS = 2;
+    private static final int GAP_SM = 4;
+    private static final int GAP_MD = 6;
+    private static final int PATH_BOX_HEIGHT = 42;
+    private static final int HINT_BOX_HEIGHT = 38;
+
     private final ConfigManager configManager;
 
-    /**
-     * A small label that shows the currently selected image path (or "none selected").
-     * This is purely UI/UX; the plugin itself reads from config.imagePath().
-     */
-    private final JLabel currentPathLabel = new JLabel();
+    private final JCheckBox enabledCheck = new JCheckBox("Enable plugin");
+    private final JCheckBox useGlobalCheck = new JCheckBox("Use one global image");
+
+    private final JTextArea modeHintArea = createInfoArea();
+
+    private final JButton chooseGlobalButton = new JButton("Choose global image...");
+    private final JTextArea globalPathArea = createPathArea();
+
+    private final JButton chooseTreeButton = new JButton("Choose Tree image...");
+    private final JTextArea treePathArea = createPathArea();
+
+    private final JButton chooseTrollButton = new JButton("Choose Troll image...");
+    private final JTextArea trollPathArea = createPathArea();
 
     public PuzzleImageSwaperPanel(ConfigManager configManager)
     {
-        super();
         this.configManager = configManager;
+        setLayout(new BorderLayout());
 
-        /**
-         * Simple layout:
-         * - Put a content panel at the top (NORTH) so it doesn't stretch weirdly.
-         * - BorderLayout lets us keep content at the top.
-         */
-        setLayout(new BorderLayout(0, 8));
+        JPanel content = new JPanel();
+        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
+        content.setBorder(BorderFactory.createEmptyBorder(PANEL_PAD, PANEL_PAD, PANEL_PAD, PANEL_PAD));
 
-        /**
-         * GridLayout(0,1) means "one column, as many rows as needed".
-         * Adds simple vertical spacing between rows.
-         */
-        JPanel content = new JPanel(new GridLayout(0, 1, 0, 8));
+        enabledCheck.setAlignmentX(LEFT_ALIGNMENT);
+        useGlobalCheck.setAlignmentX(LEFT_ALIGNMENT);
 
-        /**
-         * Main UI action:
-         * - A button that opens the OS file picker.
-         * TODO: re-adjust panel layout
-         */
-        JButton chooseButton = new JButton("Choose image...");
-        chooseButton.addActionListener(e -> openFileChooser());
+        enabledCheck.addActionListener(e ->
+                configManager.setConfiguration(
+                        PuzzleProfileImageKeys.CONFIG_GROUP,
+                        PuzzleProfileImageKeys.KEY_PLUGIN_ENABLED,
+                        Boolean.toString(enabledCheck.isSelected())
+                )
+        );
 
-        // Add UI elements to panel
-        content.add(chooseButton);
-        content.add(new JLabel("Current image path:"));
-        content.add(currentPathLabel);
+        useGlobalCheck.addActionListener(e ->
+        {
+            configManager.setConfiguration(
+                    PuzzleProfileImageKeys.CONFIG_GROUP,
+                    PuzzleProfileImageKeys.KEY_USE_GLOBAL_IMAGE,
+                    Boolean.toString(useGlobalCheck.isSelected())
+            );
+            refreshUiState();
+        });
 
-        // Place content at the top of the side panel
-        add(content, BorderLayout.NORTH);
+        chooseGlobalButton.addActionListener(e -> chooseAndSave(PuzzleProfileImageKeys.KEY_GLOBAL_IMAGE_PATH));
+        chooseTreeButton.addActionListener(e -> chooseAndSave("treeImagePath"));
+        chooseTrollButton.addActionListener(e -> chooseAndSave("trollImagePath"));
 
-        // Initialize label from the current stored config value
+        // Top controls
+        content.add(enabledCheck);
+        content.add(Box.createVerticalStrut(GAP_SM));
+        content.add(useGlobalCheck);
+        content.add(Box.createVerticalStrut(GAP_SM));
+        content.add(fullWidth(wrapArea(modeHintArea, HINT_BOX_HEIGHT)));
+
+        content.add(Box.createVerticalStrut(GAP_MD));
+        content.add(fullWidth(createSectionSeparator()));
+        content.add(Box.createVerticalStrut(GAP_SM));
+
+        // Global section
+        content.add(leftLabel("Global image:"));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(chooseGlobalButton));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(wrapArea(globalPathArea, PATH_BOX_HEIGHT)));
+
+        content.add(Box.createVerticalStrut(GAP_MD));
+        content.add(fullWidth(createSectionSeparator()));
+        content.add(Box.createVerticalStrut(GAP_SM));
+
+        // Per-puzzle section
+        content.add(leftLabel("Per-puzzle images:"));
+        content.add(Box.createVerticalStrut(GAP_SM));
+
+        content.add(leftLabel("Tree puzzle:"));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(chooseTreeButton));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(wrapArea(treePathArea, PATH_BOX_HEIGHT)));
+
+        content.add(Box.createVerticalStrut(GAP_SM));
+
+        content.add(leftLabel("Troll puzzle:"));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(chooseTrollButton));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(wrapArea(trollPathArea, PATH_BOX_HEIGHT)));
+
+        content.add(Box.createVerticalGlue());
+
+        add(content, BorderLayout.CENTER);
+
         refreshCurrentPath();
+        refreshUiState();
     }
 
-    /**
-     * Reads the stored config value and updates the label.
-     * This can be called:
-     * - on panel creation
-     * - after the user selects a new file
-     * - from the plugin when it receives ConfigChanged to keep UI in sync
-     */
     public void refreshCurrentPath()
     {
-        String path = configManager.getConfiguration("PuzzleImageSwaper", "imagePath");
+        boolean enabled = getBool(PuzzleProfileImageKeys.KEY_PLUGIN_ENABLED, true);
+        boolean useGlobal = getBool(PuzzleProfileImageKeys.KEY_USE_GLOBAL_IMAGE, true);
 
-        if (path == null || path.trim().isEmpty())
-        {
-            currentPathLabel.setText("(none selected)");
-        }
-        else
-        {
-            currentPathLabel.setText(path);
-        }
+        enabledCheck.setSelected(enabled);
+        useGlobalCheck.setSelected(useGlobal);
+
+        setPathArea(globalPathArea, getString(PuzzleProfileImageKeys.KEY_GLOBAL_IMAGE_PATH));
+        setPathArea(treePathArea, getString("treeImagePath"));
+        setPathArea(trollPathArea, getString("trollImagePath"));
     }
 
-    /**
-     * Opens a file chooser dialog and writes the selected image path to config.
-     *
-     * Notes:
-     * - RuneLite UI is Swing-based: Used SwingUtilities.invokeLater to make sure this runs on the Swing EDT.
-     * - Filter for common image extensions.
-     * - Store the absolute path to avoid ambiguity with relative paths.
-     */
-    private void openFileChooser()
+    private void refreshUiState()
+    {
+        boolean useGlobal = useGlobalCheck.isSelected();
+
+        modeHintArea.setText(useGlobal
+                ? "Using global image for all puzzle profiles."
+                : "Using per-puzzle images (falls back to global if missing).");
+
+        chooseGlobalButton.setEnabled(useGlobal);
+        globalPathArea.setEnabled(useGlobal);
+
+        chooseTreeButton.setEnabled(!useGlobal);
+        treePathArea.setEnabled(!useGlobal);
+
+        chooseTrollButton.setEnabled(!useGlobal);
+        trollPathArea.setEnabled(!useGlobal);
+    }
+
+    private void chooseAndSave(String configKey)
     {
         SwingUtilities.invokeLater(() ->
         {
             JFileChooser chooser = new JFileChooser();
-            chooser.setDialogTitle("Select puzzle background image");
+            chooser.setDialogTitle("Select puzzle image");
+            chooser.setFileFilter(new FileNameExtensionFilter("Images (png, jpg, jpeg, gif)", "png", "jpg", "jpeg", "gif"));
 
-            // Filter common image types (user can still switch filters if needed)
-            chooser.setFileFilter(new FileNameExtensionFilter(
-                    "Images (png, jpg, jpeg, gif)",
-                    "png", "jpg", "jpeg", "gif"
-            ));
-
-            // Show chooser and wait for user action
-            int result = chooser.showOpenDialog(this);
-            if (result != JFileChooser.APPROVE_OPTION)
+            if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION)
             {
-                // User cancelled or closed dialog
                 return;
             }
 
             File selected = chooser.getSelectedFile();
             if (selected == null)
             {
-                // Defensive: shouldn't happen, but avoids NPE
                 return;
             }
 
-            /**
-             * Persist the chosen path into RuneLite config.
-             *
-             * This triggers ConfigChanged, and the plugin will:
-             * - reload the image
-             * - re-split into tiles
-             * - update overlay tiles
-             */
-            configManager.setConfiguration("PuzzleImageSwaper", "imagePath", selected.getAbsolutePath());
+            configManager.setConfiguration(
+                    PuzzleProfileImageKeys.CONFIG_GROUP,
+                    configKey,
+                    selected.getAbsolutePath()
+            );
 
-            // Update the label immediately so the panel reflects the change
             refreshCurrentPath();
+            refreshUiState();
         });
+    }
+
+    private boolean getBool(String key, boolean def)
+    {
+        String v = configManager.getConfiguration(PuzzleProfileImageKeys.CONFIG_GROUP, key);
+        return v == null ? def : Boolean.parseBoolean(v);
+    }
+
+    private String getString(String key)
+    {
+        String v = configManager.getConfiguration(PuzzleProfileImageKeys.CONFIG_GROUP, key);
+        return v == null ? "" : v;
+    }
+
+    private void setPathArea(JTextArea area, String fullPath)
+    {
+        if (isBlank(fullPath))
+        {
+            area.setText("(none selected)");
+            area.setToolTipText(null);
+            return;
+        }
+
+        String trimmed = fullPath.trim();
+        area.setText(trimmed);
+        area.setCaretPosition(0);
+        area.setToolTipText(trimmed);
+    }
+
+    private static JTextArea createPathArea()
+    {
+        JTextArea area = new JTextArea();
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setRows(2);
+        area.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+        area.setOpaque(false);
+        return area;
+    }
+
+    private static JTextArea createInfoArea()
+    {
+        JTextArea area = new JTextArea();
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setRows(2);
+        area.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+        area.setOpaque(false);
+        return area;
+    }
+
+    private static JScrollPane wrapArea(JTextArea area, int preferredHeight)
+    {
+        JScrollPane scroll = new JScrollPane(area);
+        scroll.setBorder(BorderFactory.createEtchedBorder());
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        scroll.setPreferredSize(new Dimension(10, preferredHeight));
+        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, preferredHeight));
+        scroll.setAlignmentX(LEFT_ALIGNMENT);
+        return scroll;
+    }
+
+    private static JSeparator createSectionSeparator()
+    {
+        JSeparator sep = new JSeparator(JSeparator.HORIZONTAL);
+        sep.setAlignmentX(LEFT_ALIGNMENT);
+        return sep;
+    }
+
+    private static JLabel leftLabel(String text)
+    {
+        JLabel label = new JLabel(text);
+        label.setAlignmentX(LEFT_ALIGNMENT);
+        return label;
+    }
+
+    private static javax.swing.JComponent fullWidth(javax.swing.JComponent c)
+    {
+        c.setMaximumSize(new Dimension(Integer.MAX_VALUE, c.getMaximumSize().height));
+        c.setAlignmentX(LEFT_ALIGNMENT);
+        return c;
+    }
+
+    private boolean isBlank(String s)
+    {
+        return s == null || s.trim().isEmpty();
     }
 }

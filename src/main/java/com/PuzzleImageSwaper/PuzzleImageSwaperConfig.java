@@ -14,32 +14,57 @@ import net.runelite.client.config.ConfigItem;
 @ConfigGroup("PuzzleImageSwaper")
 public interface PuzzleImageSwaperConfig extends Config
 {
-	/**
-	 * Master enable/disable toggle.
-	 * When false, the plugin will not hide original sprites and the overlay will draw nothing.
-	 */
 	@ConfigItem(
-			keyName = "enableCustomBackground",
-			name = "Enable Custom Puzzle Background",
-			description = "Replace puzzle background image"
+			keyName = "pluginEnabled",
+			name = "Enable plugin",
+			description = "Global on/off for PuzzleImageSwaper",
+			hidden = true
 	)
-	default boolean enableCustomBackground()
+	default boolean pluginEnabled()
 	{
 		return true;
 	}
 
-	/**
-	 * Full path to a local image file.
-	 *
-	 * Keep this as a String for maximum compatibility (no @Path annotation required).
-	 * The "Choose image..." button in the plugin panel writes this value using ConfigManager.
-	 */
+	@ConfigItem(
+			keyName = "useGlobalImage",
+			name = "Use one global image",
+			description = "If enabled, use global image for all puzzles; otherwise use per-puzzle images",
+			hidden = true
+	)
+	default boolean useGlobalImage()
+	{
+		return true;
+	}
+
 	@ConfigItem(
 			keyName = "imagePath",
-			name = "Custom image path",
-			description = "Full path to an image file (PNG/JPG). You can set this manually, or use the plugin panel button to choose a file."
+			name = "Global image path",
+			description = "Full path to image file (PNG/JPG/GIF) used for all puzzles when global mode is enabled",
+			hidden = true
 	)
 	default String imagePath()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+			keyName = "treeImagePath",
+			name = "Tree image path",
+			description = "Image path for Tree puzzle",
+			hidden = true
+	)
+	default String treeImagePath()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+			keyName = "trollImagePath",
+			name = "Troll image path",
+			description = "Image path for Troll puzzle",
+			hidden = true
+	)
+	default String trollImagePath()
 	{
 		return "";
 	}

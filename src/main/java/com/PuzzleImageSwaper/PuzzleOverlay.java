@@ -60,7 +60,7 @@ public class PuzzleOverlay extends Overlay
     public Dimension render(Graphics2D graphics)
     {
         // Only draw when enabled full set of 25 tiles available.
-        if (!config.enableCustomBackground() || tiles == null || tiles.length < TILE_COUNT)
+        if (!config.pluginEnabled() || tiles == null || tiles.length < TILE_COUNT)
         {
             return null;
         }
