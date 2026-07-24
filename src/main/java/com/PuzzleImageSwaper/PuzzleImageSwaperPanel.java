@@ -48,6 +48,9 @@ public class PuzzleImageSwaperPanel extends PluginPanel
     private final JButton chooseTrollButton = new JButton("Choose Troll image...");
     private final JTextArea trollPathArea = createPathArea();
 
+    private final JButton chooseCastleButton = new JButton("Choose Castle image...");
+    private final JTextArea castlePathArea = createPathArea();
+
     public PuzzleImageSwaperPanel(ConfigManager configManager)
     {
         this.configManager = configManager;
@@ -81,6 +84,7 @@ public class PuzzleImageSwaperPanel extends PluginPanel
         chooseGlobalButton.addActionListener(e -> chooseAndSave(PuzzleProfileImageKeys.KEY_GLOBAL_IMAGE_PATH));
         chooseTreeButton.addActionListener(e -> chooseAndSave("treeImagePath"));
         chooseTrollButton.addActionListener(e -> chooseAndSave("trollImagePath"));
+        chooseCastleButton.addActionListener(e -> chooseAndSave("castleImagePath"));
 
         // Top controls
         content.add(enabledCheck);
@@ -122,6 +126,12 @@ public class PuzzleImageSwaperPanel extends PluginPanel
         content.add(Box.createVerticalStrut(GAP_XS));
         content.add(fullWidth(wrapArea(trollPathArea, PATH_BOX_HEIGHT)));
 
+        content.add(leftLabel("Castle puzzle:"));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(chooseCastleButton));
+        content.add(Box.createVerticalStrut(GAP_XS));
+        content.add(fullWidth(wrapArea(castlePathArea, PATH_BOX_HEIGHT)));
+
         content.add(Box.createVerticalGlue());
 
         add(content, BorderLayout.CENTER);
@@ -141,6 +151,7 @@ public class PuzzleImageSwaperPanel extends PluginPanel
         setPathArea(globalPathArea, getString(PuzzleProfileImageKeys.KEY_GLOBAL_IMAGE_PATH));
         setPathArea(treePathArea, getString("treeImagePath"));
         setPathArea(trollPathArea, getString("trollImagePath"));
+        setPathArea(castlePathArea, getString("castleImagePath"));
     }
 
     private void refreshUiState()
@@ -159,6 +170,9 @@ public class PuzzleImageSwaperPanel extends PluginPanel
 
         chooseTrollButton.setEnabled(!useGlobal);
         trollPathArea.setEnabled(!useGlobal);
+
+        chooseCastleButton.setEnabled(!useGlobal);
+        castlePathArea.setEnabled(!useGlobal);
     }
 
     private void chooseAndSave(String configKey)

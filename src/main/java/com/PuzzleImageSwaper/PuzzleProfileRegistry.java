@@ -17,10 +17,12 @@ public final class PuzzleProfileRegistry
 
     private static final PuzzleProfile TREE = profileFromRange("TREE", 4156, 4179);
     private static final PuzzleProfile TROLL = profileFromRange("TROLL", 4180, 4203);
+    private static final PuzzleProfile CASTLE = profileFromRange("CASTLE", 3413, 3436);
 
     private static final List<PuzzleProfile> PROFILES = Arrays.asList(
             TREE,
-            TROLL
+            TROLL,
+            CASTLE
     );
 
     public static List<PuzzleProfile> all()
