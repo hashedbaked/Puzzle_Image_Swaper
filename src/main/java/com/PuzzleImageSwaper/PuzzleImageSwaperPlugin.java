@@ -272,6 +272,14 @@ public class PuzzleImageSwaperPlugin extends Plugin
 				return p;
 			}
 		}
+		else if ("CASTLE".equalsIgnoreCase(profileName))
+		{
+			String p = config.castleImagePath();
+			if (p != null && !p.trim().isEmpty())
+			{
+				return p;
+			}
+		}
 
 		// Fallback to global image path if per-profile is missing or unknown.
 		return config.imagePath();

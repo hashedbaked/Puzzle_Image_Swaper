@@ -17,6 +17,7 @@ public final class PuzzleProfileImageKeys
         {
             case "TREE": return "treeImagePath";
             case "TROLL": return "trollImagePath";
+            case "CASTLE": return "castleImagePath";
             default: return KEY_GLOBAL_IMAGE_PATH; // fallback for unknown profiles
         }
     }

@@ -68,4 +68,15 @@ public interface PuzzleImageSwaperConfig extends Config
 	{
 		return "";
 	}
+
+	@ConfigItem(
+			keyName = "castleImagePath",
+			name = "Castle image path",
+			description = "Image path for Castle puzzle",
+			hidden = true
+	)
+	default String castleImagePath()
+	{
+		return "";
+	}
 }
